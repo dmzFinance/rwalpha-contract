@@ -12,11 +12,6 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
 
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    enum Stablecoin {
-        USDT,
-        USDC
-    }
-
     enum MintStatus {
         Pending,
         Settled,
@@ -32,7 +27,6 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     struct MintRequest {
         address user;
         address collectionWallet;
-        Stablecoin stablecoin;
         uint256 stableAmount;
         uint256 mintedAmount;
         MintStatus status;
@@ -44,7 +38,6 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     struct BurnRequest {
         address user;
         address payoutWallet;
-        Stablecoin stablecoin;
         uint256 burnAmount;
         uint256 payoutAmount;
         BurnStatus status;
@@ -53,8 +46,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         bytes32 memo;
     }
 
-    IERC20 public immutable usdt;
-    IERC20 public immutable usdc;
+    IERC20 public immutable stablecoin;
 
     address public mintCollectionWallet;
     address public burnPayoutWallet;
@@ -70,7 +62,6 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     event MintRequested(
         uint256 indexed requestId,
         address indexed user,
-        Stablecoin stablecoin,
         uint256 stableAmount
     );
     event MintSettled(
@@ -87,7 +78,6 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     event BurnRequested(
         uint256 indexed requestId,
         address indexed user,
-        Stablecoin stablecoin,
         uint256 burnAmount
     );
     event BurnSettled(
@@ -107,17 +97,16 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     error ZeroAddress();
     error InvalidAmount();
     error InvalidNav();
+    error InvalidArrayLength();
     error InvalidRequestStatus();
     error RequestNotFound();
-    error UnsupportedStablecoin();
 
     constructor(
         string memory name_,
         string memory symbol_,
         address admin_,
         address operator_,
-        address usdt_,
-        address usdc_,
+        address stablecoin_,
         address mintCollectionWallet_,
         address burnPayoutWallet_,
         uint256 initialNav_
@@ -125,8 +114,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         if (
             admin_ == address(0) ||
             operator_ == address(0) ||
-            usdt_ == address(0) ||
-            usdc_ == address(0) ||
+            stablecoin_ == address(0) ||
             mintCollectionWallet_ == address(0) ||
             burnPayoutWallet_ == address(0)
         ) revert ZeroAddress();
@@ -135,11 +123,14 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         _grantRole(DEFAULT_ADMIN_ROLE, admin_);
         _grantRole(OPERATOR_ROLE, operator_);
 
-        usdt = IERC20(usdt_);
-        usdc = IERC20(usdc_);
+        stablecoin = IERC20(stablecoin_);
         mintCollectionWallet = mintCollectionWallet_;
         burnPayoutWallet = burnPayoutWallet_;
         nav = initialNav_;
+    }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
     }
 
     function setNav(uint256 newNav) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -151,21 +142,19 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         emit NavUpdated(oldNav, newNav);
     }
 
-    function requestMint(Stablecoin stablecoin, uint256 stableAmount)
+    function requestMint(uint256 stableAmount)
         external
         nonReentrant
         returns (uint256 requestId)
     {
         if (stableAmount == 0) revert InvalidAmount();
 
-        IERC20 stable = _getStable(stablecoin);
-        stable.safeTransferFrom(msg.sender, mintCollectionWallet, stableAmount);
+        stablecoin.safeTransferFrom(msg.sender, mintCollectionWallet, stableAmount);
 
         requestId = nextMintRequestId++;
         mintRequests[requestId] = MintRequest({
             user: msg.sender,
             collectionWallet: mintCollectionWallet,
-            stablecoin: stablecoin,
             stableAmount: stableAmount,
             mintedAmount: 0,
             status: MintStatus.Pending,
@@ -174,10 +163,10 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
             memo: bytes32(0)
         });
 
-        emit MintRequested(requestId, msg.sender, stablecoin, stableAmount);
+        emit MintRequested(requestId, msg.sender, stableAmount);
     }
 
-    function requestBurn(Stablecoin stablecoin, uint256 burnAmount)
+    function requestBurn(uint256 burnAmount)
         external
         nonReentrant
         returns (uint256 requestId)
@@ -190,7 +179,6 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         burnRequests[requestId] = BurnRequest({
             user: msg.sender,
             payoutWallet: burnPayoutWallet,
-            stablecoin: stablecoin,
             burnAmount: burnAmount,
             payoutAmount: 0,
             status: BurnStatus.Pending,
@@ -199,7 +187,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
             memo: bytes32(0)
         });
 
-        emit BurnRequested(requestId, msg.sender, stablecoin, burnAmount);
+        emit BurnRequested(requestId, msg.sender, burnAmount);
     }
 
     function settleMint(
@@ -207,37 +195,14 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         uint256 mintedAmount,
         bytes32 memo
     ) external onlyRole(OPERATOR_ROLE) nonReentrant {
-        MintRequest storage r = mintRequests[requestId];
-        if (r.user == address(0)) revert RequestNotFound();
-        if (r.status != MintStatus.Pending) revert InvalidRequestStatus();
-        if (mintedAmount == 0) revert InvalidAmount();
-
-        r.status = MintStatus.Settled;
-        r.mintedAmount = mintedAmount;
-        r.settledAt = uint64(block.timestamp);
-        r.memo = memo;
-
-        _mint(r.user, mintedAmount);
-
-        emit MintSettled(requestId, r.user, r.stableAmount, mintedAmount);
+        _settleMint(requestId, mintedAmount, memo);
     }
 
     function rejectMint(
         uint256 requestId,
         bytes32 memo
     ) external onlyRole(OPERATOR_ROLE) nonReentrant {
-        MintRequest storage r = mintRequests[requestId];
-        if (r.user == address(0)) revert RequestNotFound();
-        if (r.status != MintStatus.Pending) revert InvalidRequestStatus();
-
-        r.status = MintStatus.Rejected;
-        r.settledAt = uint64(block.timestamp);
-        r.memo = memo;
-
-        IERC20 stable = _getStable(r.stablecoin);
-        stable.safeTransferFrom(r.collectionWallet, r.user, r.stableAmount);
-
-        emit MintRejected(requestId, r.user, r.stableAmount);
+        _rejectMint(requestId, memo);
     }
 
     function settleBurn(
@@ -245,39 +210,64 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         uint256 payoutAmount,
         bytes32 memo
     ) external onlyRole(OPERATOR_ROLE) nonReentrant {
-        BurnRequest storage r = burnRequests[requestId];
-        if (r.user == address(0)) revert RequestNotFound();
-        if (r.status != BurnStatus.Pending) revert InvalidRequestStatus();
-        if (payoutAmount == 0) revert InvalidAmount();
-
-        r.status = BurnStatus.Settled;
-        r.payoutAmount = payoutAmount;
-        r.settledAt = uint64(block.timestamp);
-        r.memo = memo;
-
-        _burn(address(this), r.burnAmount);
-
-        IERC20 stable = _getStable(r.stablecoin);
-        stable.safeTransferFrom(r.payoutWallet, r.user, payoutAmount);
-
-        emit BurnSettled(requestId, r.user, r.burnAmount, payoutAmount);
+        _settleBurn(requestId, payoutAmount, memo);
     }
 
     function rejectBurn(
         uint256 requestId,
         bytes32 memo
     ) external onlyRole(OPERATOR_ROLE) nonReentrant {
-        BurnRequest storage r = burnRequests[requestId];
-        if (r.user == address(0)) revert RequestNotFound();
-        if (r.status != BurnStatus.Pending) revert InvalidRequestStatus();
+        _rejectBurn(requestId, memo);
+    }
 
-        r.status = BurnStatus.Rejected;
-        r.settledAt = uint64(block.timestamp);
-        r.memo = memo;
+    function batchSettleMint(
+        uint256[] calldata requestIds,
+        uint256[] calldata mintedAmounts,
+        bytes32[] calldata memos
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        uint256 length = requestIds.length;
+        if (length != mintedAmounts.length || length != memos.length) revert InvalidArrayLength();
 
-        _transfer(address(this), r.user, r.burnAmount);
+        for (uint256 i = 0; i < length; ++i) {
+            _settleMint(requestIds[i], mintedAmounts[i], memos[i]);
+        }
+    }
 
-        emit BurnRejected(requestId, r.user, r.burnAmount);
+    function batchRejectMint(
+        uint256[] calldata requestIds,
+        bytes32[] calldata memos
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        uint256 length = requestIds.length;
+        if (length != memos.length) revert InvalidArrayLength();
+
+        for (uint256 i = 0; i < length; ++i) {
+            _rejectMint(requestIds[i], memos[i]);
+        }
+    }
+
+    function batchSettleBurn(
+        uint256[] calldata requestIds,
+        uint256[] calldata payoutAmounts,
+        bytes32[] calldata memos
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        uint256 length = requestIds.length;
+        if (length != payoutAmounts.length || length != memos.length) revert InvalidArrayLength();
+
+        for (uint256 i = 0; i < length; ++i) {
+            _settleBurn(requestIds[i], payoutAmounts[i], memos[i]);
+        }
+    }
+
+    function batchRejectBurn(
+        uint256[] calldata requestIds,
+        bytes32[] calldata memos
+    ) external onlyRole(OPERATOR_ROLE) nonReentrant {
+        uint256 length = requestIds.length;
+        if (length != memos.length) revert InvalidArrayLength();
+
+        for (uint256 i = 0; i < length; ++i) {
+            _rejectBurn(requestIds[i], memos[i]);
+        }
     }
 
     function setMintCollectionWallet(address newMintCollectionWallet)
@@ -304,13 +294,68 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         emit BurnPayoutWalletUpdated(old, newBurnPayoutWallet);
     }
 
-    function getStableAddress(Stablecoin stablecoin) external view returns (address) {
-        return address(_getStable(stablecoin));
+    function getStableAddress() external view returns (address) {
+        return address(stablecoin);
     }
 
-    function _getStable(Stablecoin stablecoin) internal view returns (IERC20) {
-        if (stablecoin == Stablecoin.USDT) return usdt;
-        if (stablecoin == Stablecoin.USDC) return usdc;
-        revert UnsupportedStablecoin();
+    function _settleMint(uint256 requestId, uint256 mintedAmount, bytes32 memo) internal {
+        MintRequest storage r = mintRequests[requestId];
+        if (r.user == address(0)) revert RequestNotFound();
+        if (r.status != MintStatus.Pending) revert InvalidRequestStatus();
+        if (mintedAmount == 0) revert InvalidAmount();
+
+        r.status = MintStatus.Settled;
+        r.mintedAmount = mintedAmount;
+        r.settledAt = uint64(block.timestamp);
+        r.memo = memo;
+
+        _mint(r.user, mintedAmount);
+
+        emit MintSettled(requestId, r.user, r.stableAmount, mintedAmount);
+    }
+
+    function _rejectMint(uint256 requestId, bytes32 memo) internal {
+        MintRequest storage r = mintRequests[requestId];
+        if (r.user == address(0)) revert RequestNotFound();
+        if (r.status != MintStatus.Pending) revert InvalidRequestStatus();
+
+        r.status = MintStatus.Rejected;
+        r.settledAt = uint64(block.timestamp);
+        r.memo = memo;
+
+        stablecoin.safeTransferFrom(r.collectionWallet, r.user, r.stableAmount);
+
+        emit MintRejected(requestId, r.user, r.stableAmount);
+    }
+
+    function _settleBurn(uint256 requestId, uint256 payoutAmount, bytes32 memo) internal {
+        BurnRequest storage r = burnRequests[requestId];
+        if (r.user == address(0)) revert RequestNotFound();
+        if (r.status != BurnStatus.Pending) revert InvalidRequestStatus();
+        if (payoutAmount == 0) revert InvalidAmount();
+
+        r.status = BurnStatus.Settled;
+        r.payoutAmount = payoutAmount;
+        r.settledAt = uint64(block.timestamp);
+        r.memo = memo;
+
+        _burn(address(this), r.burnAmount);
+        stablecoin.safeTransferFrom(r.payoutWallet, r.user, payoutAmount);
+
+        emit BurnSettled(requestId, r.user, r.burnAmount, payoutAmount);
+    }
+
+    function _rejectBurn(uint256 requestId, bytes32 memo) internal {
+        BurnRequest storage r = burnRequests[requestId];
+        if (r.user == address(0)) revert RequestNotFound();
+        if (r.status != BurnStatus.Pending) revert InvalidRequestStatus();
+
+        r.status = BurnStatus.Rejected;
+        r.settledAt = uint64(block.timestamp);
+        r.memo = memo;
+
+        _transfer(address(this), r.user, r.burnAmount);
+
+        emit BurnRejected(requestId, r.user, r.burnAmount);
     }
 }
