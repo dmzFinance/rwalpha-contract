@@ -46,6 +46,17 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         bytes32 memo;
     }
 
+    struct DailyStatement {
+        uint32 statementDate;
+        uint256 nav;
+        uint256 totalShares;
+        uint256 netAssets;
+        bytes32 fileHash;
+        string uri;
+        address publisher;
+        uint64 publishedAt;
+    }
+
     IERC20 public immutable stablecoin;
 
     address public mintCollectionWallet;
@@ -57,6 +68,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
 
     mapping(uint256 => MintRequest) public mintRequests;
     mapping(uint256 => BurnRequest) public burnRequests;
+    mapping(uint32 => DailyStatement) private dailyStatements;
 
     event NavUpdated(uint256 oldNav, uint256 newNav);
     event MintRequested(
@@ -91,15 +103,28 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         address indexed user,
         uint256 burnUnlockAmount
     );
+    event DailyStatementPublished(
+        uint32 indexed statementDate,
+        uint256 nav,
+        uint256 totalShares,
+        uint256 netAssets,
+        bytes32 fileHash,
+        string uri,
+        address indexed publisher
+    );
     event MintCollectionWalletUpdated(address indexed oldWallet, address indexed newWallet);
     event BurnPayoutWalletUpdated(address indexed oldWallet, address indexed newWallet);
 
     error ZeroAddress();
     error InvalidAmount();
     error InvalidNav();
+    error InvalidDate();
     error InvalidArrayLength();
     error InvalidRequestStatus();
+    error InvalidHash();
     error RequestNotFound();
+    error StatementAlreadyExists();
+    error StatementNotFound();
 
     constructor(
         string memory name_,
@@ -134,12 +159,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     }
 
     function setNav(uint256 newNav) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newNav == 0) revert InvalidNav();
-
-        uint256 oldNav = nav;
-        nav = newNav;
-
-        emit NavUpdated(oldNav, newNav);
+        _setNav(newNav);
     }
 
     function requestMint(uint256 stableAmount)
@@ -296,6 +316,101 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
 
     function getStableAddress() external view returns (address) {
         return address(stablecoin);
+    }
+
+    function publishDailyStatement(
+        uint32 statementDate,
+        uint256 statementNav,
+        uint256 totalShares,
+        uint256 netAssets,
+        bytes32 fileHash,
+        string calldata uri
+    ) external onlyRole(OPERATOR_ROLE) {
+        _publishDailyStatement(
+            statementDate,
+            statementNav,
+            totalShares,
+            netAssets,
+            fileHash,
+            uri
+        );
+    }
+
+    function publishDailyStatementAndSetNav(
+        uint32 statementDate,
+        uint256 statementNav,
+        uint256 totalShares,
+        uint256 netAssets,
+        bytes32 fileHash,
+        string calldata uri
+    ) external onlyRole(OPERATOR_ROLE) {
+        _setNav(statementNav);
+        _publishDailyStatement(
+            statementDate,
+            statementNav,
+            totalShares,
+            netAssets,
+            fileHash,
+            uri
+        );
+    }
+
+    function getDailyStatement(uint32 statementDate)
+        external
+        view
+        returns (DailyStatement memory)
+    {
+        DailyStatement memory statement = dailyStatements[statementDate];
+        if (statement.publishedAt == 0) revert StatementNotFound();
+        return statement;
+    }
+
+    function hasDailyStatement(uint32 statementDate) external view returns (bool) {
+        return dailyStatements[statementDate].publishedAt != 0;
+    }
+
+    function _setNav(uint256 newNav) internal {
+        if (newNav == 0) revert InvalidNav();
+
+        uint256 oldNav = nav;
+        nav = newNav;
+
+        emit NavUpdated(oldNav, newNav);
+    }
+
+    function _publishDailyStatement(
+        uint32 statementDate,
+        uint256 statementNav,
+        uint256 totalShares,
+        uint256 netAssets,
+        bytes32 fileHash,
+        string calldata uri
+    ) internal {
+        if (statementDate == 0) revert InvalidDate();
+        if (statementNav == 0 || totalShares == 0 || netAssets == 0) revert InvalidAmount();
+        if (fileHash == bytes32(0)) revert InvalidHash();
+        if (dailyStatements[statementDate].publishedAt != 0) revert StatementAlreadyExists();
+
+        dailyStatements[statementDate] = DailyStatement({
+            statementDate: statementDate,
+            nav: statementNav,
+            totalShares: totalShares,
+            netAssets: netAssets,
+            fileHash: fileHash,
+            uri: uri,
+            publisher: msg.sender,
+            publishedAt: uint64(block.timestamp)
+        });
+
+        emit DailyStatementPublished(
+            statementDate,
+            statementNav,
+            totalShares,
+            netAssets,
+            fileHash,
+            uri,
+            msg.sender
+        );
     }
 
     function _settleMint(uint256 requestId, uint256 mintedAmount, bytes32 memo) internal {
