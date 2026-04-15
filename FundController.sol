@@ -168,6 +168,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         returns (uint256 requestId)
     {
         if (stableAmount == 0) revert InvalidAmount();
+        if (stableAmount >= 100000000) revert InvalidAmount();
 
         stablecoin.safeTransferFrom(msg.sender, mintCollectionWallet, stableAmount);
 
