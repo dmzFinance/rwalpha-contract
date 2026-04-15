@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -58,6 +59,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
     }
 
     IERC20 public immutable stablecoin;
+    uint8 private immutable _tokenDecimals;
 
     address public mintCollectionWallet;
     address public burnPayoutWallet;
@@ -149,13 +151,14 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         _grantRole(OPERATOR_ROLE, operator_);
 
         stablecoin = IERC20(stablecoin_);
+        _tokenDecimals = IERC20Metadata(stablecoin_).decimals();
         mintCollectionWallet = mintCollectionWallet_;
         burnPayoutWallet = burnPayoutWallet_;
         nav = initialNav_;
     }
 
-    function decimals() public pure override returns (uint8) {
-        return 6;
+    function decimals() public view override returns (uint8) {
+        return _tokenDecimals;
     }
 
     function setNav(uint256 newNav) external onlyRole(DEFAULT_ADMIN_ROLE) {
