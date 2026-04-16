@@ -60,7 +60,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
 
     IERC20 public immutable stablecoin;
     uint8 private immutable _tokenDecimals;
-    uint256 private immutable _maxMintStableAmount;
+    uint256 private immutable _minMintStableAmount;
 
     address public mintCollectionWallet;
     address public burnPayoutWallet;
@@ -155,7 +155,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         stablecoin = IERC20(stablecoin_);
         _tokenDecimals = IERC20Metadata(stablecoin_).decimals();
         if (_tokenDecimals > 75) revert InvalidTokenDecimals();
-        _maxMintStableAmount = 100 * (10 ** _tokenDecimals);
+        _minMintStableAmount = 100 * (10 ** _tokenDecimals);
         mintCollectionWallet = mintCollectionWallet_;
         burnPayoutWallet = burnPayoutWallet_;
         nav = initialNav_;
@@ -174,8 +174,7 @@ contract FundController is ERC20, AccessControl, ReentrancyGuard {
         nonReentrant
         returns (uint256 requestId)
     {
-        if (stableAmount == 0) revert InvalidAmount();
-        if (stableAmount >= _maxMintStableAmount) revert InvalidAmount();
+        if (stableAmount < _minMintStableAmount) revert InvalidAmount();
 
         stablecoin.safeTransferFrom(msg.sender, mintCollectionWallet, stableAmount);
 
